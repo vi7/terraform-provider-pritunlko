@@ -4,13 +4,15 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"github.com/dropbox/godropbox/errors"
-	"github.com/pritunl/terraform-provider-pritunl/errortypes"
-	"github.com/pritunl/terraform-provider-pritunl/schemas"
+	"github.com/vi7/terraform-provider-pritunlko/pritunlko/internal/errortypes"
 	"gopkg.in/mgo.v2/bson"
 	"io"
+	"io/ioutil"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -28,22 +30,30 @@ type Request struct {
 	Json   interface{}
 }
 
-func (r *Request) Do(prvdr *schemas.Provider, respVal interface{}) (
-	resp *http.Response, err error) {
+func (r *Request) Do(pritunlClient *PritunlClient, respVal interface{}) (*http.Response, error) {
 
-	url := "https://" + prvdr.PritunlHost + r.Path
+	var resp *http.Response
+
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: pritunlClient.PritunlInsecure,
+		},
+	}
+	client.Transport = tr
+
+	url := "https://" + pritunlClient.PritunlHost + r.Path
 
 	authTimestamp := strconv.FormatInt(time.Now().Unix(), 10)
 	authNonce := bson.NewObjectId().Hex()
 	authString := strings.Join([]string{
-		prvdr.PritunlToken,
+		pritunlClient.PritunlToken,
 		authTimestamp,
 		authNonce,
 		r.Method,
 		r.Path,
 	}, "&")
 
-	hashFunc := hmac.New(sha256.New, []byte(prvdr.PritunlSecret))
+	hashFunc := hmac.New(sha256.New, []byte(pritunlClient.PritunlSecret))
 	hashFunc.Write([]byte(authString))
 	rawSignature := hashFunc.Sum(nil)
 	authSig := base64.StdEncoding.EncodeToString(rawSignature)
@@ -52,10 +62,10 @@ func (r *Request) Do(prvdr *schemas.Provider, respVal interface{}) (
 	if r.Json != nil {
 		data, e := json.Marshal(r.Json)
 		if e != nil {
-			err = errortypes.RequestError{
+			err := errortypes.RequestError{
 				errors.Wrap(e, "request: Json marshal error"),
 			}
-			return
+			return resp, err
 		}
 
 		body = bytes.NewBuffer(data)
@@ -66,7 +76,7 @@ func (r *Request) Do(prvdr *schemas.Provider, respVal interface{}) (
 		err = &errortypes.RequestError{
 			errors.Wrap(err, "request: Failed to create request"),
 		}
-		return
+		return resp, err
 	}
 
 	if r.Query != nil {
@@ -79,7 +89,7 @@ func (r *Request) Do(prvdr *schemas.Provider, respVal interface{}) (
 		req.URL.RawQuery = query.Encode()
 	}
 
-	req.Header.Set("Auth-Token", prvdr.PritunlToken)
+	req.Header.Set("Auth-Token", pritunlClient.PritunlToken)
 	req.Header.Set("Auth-Timestamp", authTimestamp)
 	req.Header.Set("Auth-Nonce", authNonce)
 	req.Header.Set("Auth-Signature", authSig)
@@ -88,36 +98,44 @@ func (r *Request) Do(prvdr *schemas.Provider, respVal interface{}) (
 		req.Header.Set("Content-Type", "application/json")
 	}
 
+	// send http request to the server
+	log.Printf("request: Sending request to the server: %v\n", req)
 	resp, err = client.Do(req)
 	if err != nil {
 		err = &errortypes.RequestError{
-			errors.Wrap(err, "request: Request error"),
+			errors.Wrap(err, "request: Request error:\n"),
 		}
-		return
+		return nil, err
+	}
+
+	respBody, readErr := ioutil.ReadAll(resp.Body)
+	if readErr != nil {
+		readErr = &errortypes.ReadError{
+			errors.Wrap(readErr, "request: Response body read error"),
+		}
+		return nil, readErr
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == 404 {
-		return
-	}
+	log.Printf("request: Server replied with status code: %d\n", resp.StatusCode)
+	log.Printf("request: Server replied with response body: %s\n", respBody)
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		err = &errortypes.RequestError{
-			errors.Wrapf(err, "request: Bad response status %d",
-				resp.StatusCode),
+			errors.Wrapf(err, "request: Bad response status %d\nServer replied: %s",
+				resp.StatusCode, respBody),
 		}
-		return
+		return nil, err
 	}
 
 	if respVal != nil {
-		err = json.NewDecoder(resp.Body).Decode(respVal)
-		if err != nil {
+		if err := json.Unmarshal(respBody, respVal); err != nil {
 			err = &errortypes.ParseError{
-				errors.Wrap(err, "request: Failed to parse response"),
+				errors.Wrapf(err, "request: Failed to parse response body. Server replied: %s\n", respBody),
 			}
-			return
+			return nil, err
 		}
 	}
 
-	return
+	return resp, err
 }
