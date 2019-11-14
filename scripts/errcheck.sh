@@ -10,6 +10,7 @@ fi
 
 err_files=$(errcheck -ignoretests \
                      -ignore 'github.com/hashicorp/terraform/helper/schema:Set' \
+                     -ignore '"github.com/hashicorp/terraform-plugin-sdk/helper/schema:Set' \
                      -ignore 'bytes:.*' \
                      -ignore 'io:Close|Write' \
                      $(go list ./...| grep -v /vendor/))
