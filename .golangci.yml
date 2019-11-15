@@ -1,0 +1,22 @@
+linters:
+  disable-all: true
+  enable:
+  - deadcode
+  - errcheck
+  - gofmt
+  - gosimple
+  - ineffassign
+  - misspell
+  - staticcheck
+  - structcheck
+  - unconvert
+  - unused
+  - varcheck
+  - vet
+issues:
+  # List of regexps of issue texts to exclude, empty list by default.
+  # But independently from this option we use default exclude patterns,
+  # it can be disabled by `exclude-use-default: false`. To list all
+  # excluded by default patterns execute `golangci-lint run --help`
+  exclude:
+  - composite
